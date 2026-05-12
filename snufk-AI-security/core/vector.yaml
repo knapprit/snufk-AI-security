@@ -1,0 +1,36 @@
+# Используем простой путь в корне диска
+data_dir: "C:\\vector_data"
+
+sources:
+  # Системные логи Sysmon
+  sysmon_source:
+    type: "windows_event_log"
+    channels: ["Microsoft-Windows-Sysmon/Operational"]
+
+  # Сетевые алерты Сурикаты
+  suricata_source:
+    type: "file"
+    include: ["C:\\Users\\CStore\\Desktop\\SOC\\snufk\\suricata\\logs\\eve.json"]
+    read_from: "end"
+
+  # Детальная история Zeek
+  zeek_source:
+    type: "file"
+    include: ["C:\\Users\\CStore\\Desktop\\SOC\\snufk\\zeek\\logs\\*.log"]
+    read_from: "end"
+
+transforms:
+  filter_sysmon:
+    type: "filter"
+    inputs: ["sysmon_source"]
+    condition: |
+      includes([1, 3, 11, 22], .event_id)
+
+sinks:
+  kafka_sink:
+    type: "kafka"
+    inputs: ["filter_sysmon", "suricata_source", "zeek_source"]
+    bootstrap_servers: "127.0.0.1:9092"
+    topic: "unified-logs"
+    encoding:
+      codec: "json"

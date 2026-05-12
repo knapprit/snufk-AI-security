@@ -1,0 +1,14 @@
+*.json
+*.log
+**/logs/*
+!**/logs/.gitkeep
+*.exe
+vector-*/
+Sysmon/
+core/vector-*/
+kafka_data/
+vector_data/
+C:/vector_data/
+__pycache__/
+*.pyc
+.env

@@ -1,0 +1,36 @@
+sources:
+  suricata:
+    type: "file"
+    include: ["/var/log/suricata/eve.json"]
+    read_from: "end"
+
+  zeek:
+    type: "file"
+    include: ["/pcap/*.log"]
+    read_from: "end"
+
+sinks:
+  kafka:
+    type: "kafka"
+    inputs: ["suricata", "zeek"]
+    bootstrap_servers: "kafka:9092"
+    topic: "network-logs"
+    encoding:
+      codec: "json"
+
+sources:
+  windows_sysmon:
+    type: "host_metrics"
+
+transforms:
+  process_logic:
+    type: "filter"
+    inputs: ["windows_sysmon"]
+    condition: ".event_id == 1"
+
+sinks:
+  kafka_out:
+    type: "kafka"
+    inputs: ["process_logic", "network_logs"]
+    bootstrap_servers: "localhost:9092"
+    topic: "unified-logs"
