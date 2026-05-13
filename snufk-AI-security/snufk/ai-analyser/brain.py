@@ -41,97 +41,120 @@ WHITE_LIST = ["127.0.0.1", "localhost"]
 
 class DockerSOCBrain:
     def __init__(self):
-        self.risk_map = defaultdict(int)
-        self.history = defaultdict(list)
+        self.risk_scores = defaultdict(int)
+        self.incident_history = defaultdict(list)
+        self.last_seen = defaultdict(float)
+        self.reset_after = 600  #10 минут тишины. сброс.
+        
+    
         self.consumer = self.connect_to_kafka()
 
     def connect_to_kafka(self):
-        """Метод для ожидания Кафки внутри Docker сети"""
+        """подключение к брокеру внутри Docker"""
         print("[DOCKER ENGINE] Инициализация аналитического ядра...")
         while True:
             try:
-                # Внутри Docker используем порт 29092
+                #внутри докера порт 29092
                 consumer = KafkaConsumer(
                     'unified-logs',
                     bootstrap_servers=['kafka:29092'], 
                     value_deserializer=lambda m: json.loads(m.decode('utf-8')),
                     auto_offset_reset='latest',
-                    group_id='docker-brain-group'
+                    group_id='docker-soc-group'
                 )
                 print("[DOCKER ENGINE] Соединение с Kafka установлено")
                 return consumer
             except NoBrokersAvailable:
-                print(" [DOCKER ENGINE] Kafka еще не готова, жду 5 секунд...")
+                print("[DOCKER ENGINE] Kafka еще не готова, жду 5 секунд...")
                 time.sleep(5)
             except Exception as e:
-                print(f"[DOCKER ENGINE] Ошибка подключения: {e}")
+                print(f"[DOCKER ENGINE] Ошибка. {e}")
                 time.sleep(5)
 
+    def analyze_risk(self, event_msg, suricata_severity=3):
+        """гибридный анализ"""
+        #поиск в списке
+        for key, data in ATTACK_SIGNATURES.items():
+            if data['desc'].lower() in event_msg.lower():
+                return data['score'], data['desc']
+
+        #поиск по ключевым словам
+        keywords = {
+            "exploit": 100, "critical": 100, "rce": 100, "shell": 100,
+            "sql": 60, "brute": 60, "scan": 40, "nmap": 40, "probe": 40
+        }
+        for word, score in keywords.items():
+            if word in event_msg.lower():
+                return score, f"Heuristic: {word.upper()}"
+
+        #Severity самой Сурикаты
+        if suricata_severity == 1: return 80, "S1 Critical Rule"
+        elif suricata_severity == 2: return 40, "S2 Warning Rule"
+        return 0, "Normal"
+
     def normalize(self, log):
-        """Приводит логи Suricata и Sysmon к общему виду"""
-        event = {"src": "unknown", "msg": "Traffic", "type": "info"}
+        """парсер логов Сеть/Система"""
+        event = {"src": "unknown", "msg": "", "sev": 3, "label": "INFO"}
         
-        
+        # если пришёл алерт от сурикаты
         if 'alert' in log:
-            event = {
-                "src": log.get('src_ip', 'unknown'),
-                "msg": log['alert'].get('signature', ''),
-                "type": "network"
-            }
-
+            event['src'] = log.get('src_ip', '0.0.0.0')
+            event['msg'] = log['alert'].get('signature', '')
+            event['sev'] = log['alert'].get('severity', 3)
+            event['label'] = "NETWORK"
+            
+        # если это от Sysmon (из Vector)
         elif 'event_id' in log or 'EventID' in log:
-            event_data = log.get('event_data', {})
-            #найти IP в сетевом событии Sysmon (Event ID 3)
-            ip = event_data.get('SourceIp') or "host_machine"
+            event['src'] = log.get('event_data', {}).get('SourceIp') or "local_host"
+            event['label'] = "SYSTEM"
             
-            #RCE
-            parent = event_data.get('ParentImage', '').lower()
-            child = event_data.get('Image', '').lower()
-            
-            msg = f"Sysmon Event {log.get('event_id') or log.get('EventID')}"
+            # Логика RCE (Java -> Cmd)
+            parent = log.get('event_data', {}).get('ParentImage', '').lower()
+            child = log.get('event_data', {}).get('Image', '').lower()
             if 'java' in parent and ('cmd.exe' in child or 'powershell.exe' in child):
-                msg = "Web-server spawned Shell (RCE Attempt)"
+                event['msg'] = "RCE Attempt: Web-server spawned Shell"
+            else:
+                event['msg'] = f"Sysmon Event {log.get('event_id') or log.get('EventID')}"
 
-            event = {
-                "src": ip,
-                "msg": msg,
-                "type": "system"
-            }
         return event
 
     def process(self):
-        """Основной цикл обработки логов"""
-        print(" [DOCKER ENGINE] Аналитика запущена...")
+        print(" [DOCKER ENGINE] Мониторинг запущен.")
         for message in self.consumer:
             log = message.value
+            now = time.time()
             event = self.normalize(log)
             ip = event['src']
             
-            # Проверка белого списка
-            if ip in WHITE_LIST:
-                continue
+            if ip in WHITE_LIST or not event['msg']: continue
 
-            # суммирование баллов риска на основе сигнатур
-            for key, data in ATTACK_SIGNATURES.items():
-                if data['desc'].lower() in event['msg'].lower():
-                    self.risk_map[ip] += data['score']
-                    self.history[ip].append(event)
-                    print(f"🔹 [DOCKER] Анализ {ip}: {data['desc']} (+{data['score']} pts)")
+            # очистка старых баллов
+            if now - self.last_seen[ip] > self.reset_after:
+                self.risk_scores[ip] = 0
+                self.incident_history[ip] = []
+            
+            self.last_seen[ip] = now
 
-            # Если риск превысил порог 100 баллов
-            if self.risk_map[ip] >= 100:
-                self.report(ip)
-                self.risk_map[ip] = 0 # Сброс
-                self.history[ip] = []
+            # Анализ риска
+            points, reason = self.analyze_risk(event['msg'], event['sev'])
 
-    def report(self, ip):
-        """Текстовый отчет для логов Docker"""
-        print("\n" + "!"*40)
-        print(f"!!! КРИТИЧЕСКИЙ ИНЦИДЕНТ В DOCKER LOGS !!!")
+            if points > 0:
+                self.risk_scores[ip] += points
+                self.incident_history[ip].append(f"{event['label']}: {reason}")
+                print(f"🔹 [DOCKER LOG] IP {ip} набрал {self.risk_scores[ip]} pts. Причина: {reason}")
+
+                if self.risk_scores[ip] >= 100:
+                    self.report_to_logs(ip)
+                    self.risk_scores[ip] = 0
+                    self.incident_history[ip] = []
+
+    def report_to_logs(self, ip):
+        """вывод"""
+        print(f"\n{'!'*20} КРИТИЧЕСКИЙ ИНЦИДЕНТ {'!'*20}")
         print(f"ОБЪЕКТ: {ip}")
-        print(f"ИТОГ: Данный субъект представляет угрозу. Блокировка инициирована.")
-        print("!"*40 + "\n")
+        print(f"ВРЕМЯ:  {time.strftime('%H:%M:%S')}")
+        print(f"ВЕРДИКТ: ПОДТВЕРЖДЕННЫЙ ВЗЛОМ / ИЗОЛЯЦИЯ ВЫПОЛНЕНА")
+        print(f"{'!'*60}\n")
 
 if __name__ == "__main__":
-    brain = DockerSOCBrain()
-    brain.process()
+    DockerSOCBrain().process()
