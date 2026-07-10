@@ -2,13 +2,19 @@
 
 Это гибридная система класса XDR (Extended Detection and Response), предназначенная для высокоточной детекции угроз и автоматического предотвращения вторжений. Система устраняет разрыв между обнаружением атаки и реакцией на неё, автоматизируя рутинную работу аналитиков SOC L1.
 
-![alt text](https://img.shields.io/badge/License-MIT-yellow.svg)
+![License](https://img.shields.io/badge/License-All%20Rights%20Reserved-red)
+![Status](https://img.shields.io/badge/Status-Work%20In%20Progress-orange)
 
 
 ![alt text](https://img.shields.io/badge/python-3.9+-blue.svg)
 
 
 ![alt text](https://img.shields.io/badge/Docker-Supported-blue)
+
+> ⚠️ **ВАЖНО:** Этот проект находится в стадии разработки.  
+> Просмотр и изучение разрешены. Любое использование, копирование  
+> или распространение без письменного разрешения автора запрещено.  
+> См. [LICENSE](LICENSE) для подробностей.
 
 ## Цель проекта
 
